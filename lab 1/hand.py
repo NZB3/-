@@ -33,13 +33,6 @@ class LossFunction:
 def quadratic_loss(x, y):
     return x ** 2 + y ** 2
 
-
-@LossFunction
-def schaffer_n2_loss(x, y):
-    return np.sin(x) * np.exp((1 - np.cos(y)) ** 2) + \
-        np.cos(y) * np.exp((1 - np.sin(x)) ** 2) + (x - y) ** 2
-
-
 @LossFunction
 def single_param_loss(x):
     return x ** 2 + np.sin(x)
