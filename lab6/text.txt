@@ -1,0 +1,777 @@
+Описание задачи
+Сформируем список требований для нашего редактора. Он должен:
+
+Иметь предустановленные стили элементов — заголовки, списки и т.д
+
+Форматировать стили текста — жирность, курсив и т.д
+
+Поддерживать интерактивные элементы — например, ссылки
+
+Работать с сочетанием клавиш
+
+Импортировать/экспортировать контент в HTML
+
+Я понимал, что реализовывать все с нуля сложно и долго, так как браузеры могут по-разному обрабатывать нативные события работы с текстом.
+
+Поэтому я начал искать информацию о том, как другие разработчики решали похожие задачи, и с какими подводными камнями они сталкивались. Выяснилось, что одним из популярных решений является пакет Draft.js.
+
+2. Что такое Draft.js?
+В 2016 году инженеры Facebook представили пакет для работы с текстом на React Conf. Draft.js — это фреймворк для работы с текстом на React.js. Он позволяет создать состояние редактора, которое будет хранить всю информацию о контенте, о положении курсора и многом другом. А также предоставляет кроссбраузерные функции для удобного изменения этого состояния. Draft.js работает с имутабельными данными при помощи immutable.js. Это означает, что при изменении состояния мы полностью перезаписываем его новой версией.
+
+Контент в редакторе на Draft.js строится из блоков. Блок — структура данных, в которой хранится информация о тексте внутри него. Каждому блоку можно задавать свои уникальные данные и настройки его рендера: задавать тег, стили, атрибуты или просто указать React-компонент. К любому фрагменту текста блока можно применить inline-стили (например, сделать жирным). А для создания более сложных и интерактивных элементов в Draft.js есть системы Entities и Decorators. С их помощью можно рендерить произвольные React-компоненты и связывать их с фрагментами текста.
+
+Более подробную информацию можно найти на официальном сайте фреймворка.
+
+
+3. Архитектура
+Наш компонент будет состоять из нескольких частей:
+
+Окно редактора
+
+Элементы управления
+
+Весь API нашего редактора вынесем в отдельный React-hook useEditor.
+
+Дизайн редактора может быть произвольным, и элементы управления могут находится далеко от самого окна редактора. Для того, чтобы не пробрасывать API редактора через props-ы множества компонентов, воспользуемся React Context. C его помощью компоненты смогут легко получить нужные данные и функции.
+
+Таким образом, схема редактора будет выглядеть так:
+
+
+4. Начинаем кодить
+Чтобы не тратить время на создание и настойку сборки, воспользуемся Create React App. Код будет написан на Typescript, поэтому создадим проект с соответствующим шаблоном:
+
+$ npx create-react-app editor --template typescript
+Установим необходимые зависимости:
+
+$ yarn add draft-js draft-convert
+draft-js — фреймворк Draft.js
+
+draft-convert — библиотека для удобного импортирования и экспортирования данных из Draft.js. Более подробно о ней поговорим в блоке «Экспорт-импорт html в редактор».
+
+Установим типы для вышеописанных библиотек:
+
+$ yarn add -D @types/draft-js @types/draft-convert
+Создадим файл useEditor.tsx. Данный файл будет содержать React-hook, в котором мы будем описывать всю логику нашего редактора:
+
+// src/TextEditor/useEditor.tsx
+import { EditorState } from 'draft-js';
+import * as React from 'react';
+
+export type EditorApi = {
+  state: EditorState;
+  onChange: (state: EditorState) => void;
+}
+
+export const useEditor = (): EditorApi => {
+  const [state, setState] = React.useState(() => EditorState.createEmpty());
+
+  return React.useMemo(() => ({
+    state,
+    onChange: setState
+  }), [state])
+}
+С помощью метода EditorState.createEmpty() мы создаем пустое имутабельное состояние нашего редактора и сохраняем его в локальном состоянии. Постепенно мы будем добавлять в него функции и логику.
+
+Создадим React Context, с помощью которого будем прокидывать API редактора:
+
+// src/TextEditor/context.tsx
+import * as React from 'react';
+import { EditorApi, useEditor } from './useEditor';
+
+const TextEditorContext = React.createContext<EditorApi | undefined>(undefined);
+
+export const useEditorApi = () => {
+  const context = React.useContext(TextEditorContext);
+  if (context === undefined) {
+    throw new Error('useEditorApi must be used within TextEditorProvider');
+  }
+
+  return context;
+}
+
+export const TextEditorProvider: React.FC = ({ children }) => {
+  const editorApi = useEditor();
+
+  return (
+    <TextEditorContext.Provider value={editorApi}>
+      {children}
+    </TextEditorContext.Provider>
+  )
+}
+Теперь в любом месте нашего приложения мы можем получить доступ к функциям редактора с помощью хука useEditorApi:
+
+const editorApi = useEditorApi();
+Добавим провайдер на страницу:
+
+// src/App.tsx
+function App() {
+  return (
+    <TextEditorProvider >
+      <ToolPanel />
+      <TextEditor />
+    </TextEditorProvider>
+  );
+}
+Создадим компонент окна редактора TextEditor:
+
+// src/TextEditor/index.ts
+export { default } from './TextEditor';
+// src/TextEditor/TextEditor.tsx
+import * as React from 'react';
+import { Editor } from 'draft-js';
+import { useEditorApi } from './context';
+import cn from 'classnames';
+import './TextEditor.scss';
+
+export type TextEditorProps = {
+  className?: string;
+}
+
+const TextEditor: React.FC<TextEditorProps> = ({ className }) => {
+  const { state, onChange } = useEditorApi();
+
+  return (
+    <div className={cn("text-editor", className)}>
+      <Editor
+        placeholder="Введите ваш текст"
+        editorState={state}
+        onChange={onChange}
+      />
+    </div>
+  );
+}
+
+export default TextEditor;
+Мы подключили базовый компонент Editor из пакета Draft.js. Именно он создаст редактируемое поле и будет управлять содержимым. Связываем его c ранее созданным API редактора.
+
+Создадим компонент панели инструментов:
+
+// src/ToolPanel/index.ts
+export { default } from './ToolPanel';
+// src/ToolPanel/ToolPanel.tsx
+import * as React from 'react';
+import { EditorApi } from '../useEditor';
+import './ToolPanel.scss';
+
+const ToolPanel:React.FC<ToolPanelProps> = ({ className } ) => {
+  return (
+    <div className={cn('tool-panel', className)}>
+      {/* Здесь будет код для элементов управления */}
+    </div>
+  );
+}
+
+export default ToolPanel;
+5. Создание простых блоков
+Мы создали редактор, но пока он ни чем не отличается от простого textarea. Добавим возможность создания блоков.
+
+По умолчанию Draft.js содержит настройки основных типов блоков. Полный список можно найти тут.
+
+Создадим файл конфигурации config.ts:
+
+// src/TextEditor/config.ts
+export enum BlockType {
+  /* Заголовки */
+  h1 = 'header-one',
+  h2 = 'header-two',
+  h3 = 'header-three',
+  h4 = 'header-four',
+  h5 = 'header-five',
+  h6 = 'header-six',
+  /* Цитата */
+  blockquote = 'blockquote',
+  /* Блок с кодом */
+  code = 'code-block',
+  /* Список */
+  list = 'unordered-list-item',
+  /* Нумерованный список */
+  orderList = 'ordered-list-item',
+  /* Сноска */
+  cite = 'cite',
+  /* Простой текст */
+  default = 'unstyled',
+}
+Мы описали enum с названиями типов блоков, а также добавили новый блок сноски cite. Но пока редактор ничего не знает о том, как обрабатывать новые типы блоков. Для того, чтобы добавить произвольные блоки в Draft.js, необходимо создать имутабельную карту блоков. Воспользуемся методом Immutable.Map из пакета immutable (он устанавливается вместе с Draft.js). Мы описали название нашего нового блока (cite) и указали название тега, с которым он должен выводиться в DOM. Для того, чтобы не описывать стандартные блоки, объединим карту блоков по умолчанию с нашей при помощи метода  DefaultDraftBlockRenderMap.merge:
+
+// src/TextEditor/config.ts
+import Immutable from 'immutable';
+import { DefaultDraftBlockRenderMap } from 'draft-js';
+
+...
+
+const CUSTOM_BLOCK_RENDER_MAP = Immutable.Map({
+  [BlockType.cite]: {
+    element: 'cite', <-- название тега
+  },
+});
+
+export const BLOCK_RENDER_MAP = DefaultDraftBlockRenderMap.merge(CUSTOM_BLOCK_RENDER_MAP);
+Далее укажем редактору новую конфигурацию блоков:
+
+// src/TextEditor/TextEditor.tsx
+import { BLOCK_RENDER_MAP } from './config';
+...
+<Editor
+    ...
+    blockRenderMap={BLOCK_RENDER_MAP}
+/>
+Теперь наш редактор умеет обрабатывать типы блоков. Для создания элементов управления типом блоков, нам необходимо добавить в хук useEditor два поля:
+
+toggleBlockType — функция переключения типа блока;
+
+currentBlockType — переменная со значением текущего типа блока, с помощью которой можно будет добавить элементу активное состояние.
+
+Draft.js содержит класс RichUtils со вспомогательными методами для редактирования текста. Для реализации toggleBlockType воспользуемся методом RichUtils.toggleBlockType, чтобы применить определенный тип блока к текущему состоянию редактора:
+
+// src/TextEditor/useEditor.tsx
+export type EditorApi = {
+  ...
+  toggleBlockType: (blockType: BlockType) => void;
+}
+
+export const useEditor = (html?: string): EditorApi => {
+    ...
+    const toggleBlockType = React.useCallback((blockType: BlockType) => {
+      setState((currentState) => RichUtils.toggleBlockType(currentState, blockType))
+    }, []);
+    ...
+}
+Реализация currentBlockType будет выглядеть следующим образом:
+
+// src/TextEditor/useEditor.tsx
+import { BlockType } from './config';
+
+export type EditorApi = {
+  ...
+  currentBlockType: BlockType;
+}
+
+export const useEditor = (html?: string): EditorApi => {
+    ...
+    const currentBlockType = React.useMemo(() => {
+      /* Шаг 1 */
+      const selection = state.getSelection();
+      /* Шаг 2 */
+      const content = state.getCurrentContent();
+      /* Шаг 3 */
+      const block = content.getBlockForKey(selection.getStartKey());
+      /* Шаг 4 */
+      return block.getType() as BlockType;
+    }, [state]);
+    ...
+}
+Разберем код подробнее.
+
+Шаг 1: получаем карту, в которой хранится информация о том, где находится каретка пользователя. Напомню что Draft.js работает с имутабельными данными, и чтобы посмотреть что хранится в selection, можно воспользоваться методом toJS .
+
+
+Шаг 2: получаем карту контента нашего редактора.
+
+
+Шаг 3: по ключу находим блок, в котором сейчас находимся. Ключ — это просто уникальный хеш, который сгенерировал Draft.js.
+
+Шаг 4: получаем тип найденного блока.
+
+Теперь у нас есть все необходимое, чтобы создать элементы управления типами блоков.
+
+
+6. Inline-cтили текста
+Теперь создадим функции применения стилей к выделенному тексту.
+
+Draft.js содержит встроенные типы стилей для inline-cтилей. Воспользуемся ими и добавим свой произвольный тип. Наш стиль будет менять цвет фона и цвет шрифта текста.
+
+Для начала опишем в нашем конфиге enum для inline-cтилей:
+
+// src/TextEditor/config.ts
+export enum InlineStyle {
+  BOLD = 'BOLD',
+  ITALIC = 'ITALIC',
+  UNDERLINE = 'UNDERLINE',
+  ACCENT = 'ACCENT' // код нашего произвольного стиля
+}
+Так как у нас появился произвольный стиль, нам нужно описать, какие стили он будет применять. Для этого создадим карту:
+
+// src/TextEditor/config.ts
+export const CUSTOM_STYLE_MAP = {
+  [InlineStyle.ACCENT]: {
+    backgroundColor: '#F7F6F3',
+    color: '#A41E68',
+  },
+};
+И теперь нам необходимо подключить карту в Editor:
+
+// src/TextEditor/TextEditor.tsx
+<Editor
+  customStyleMap={CUSTOM_STYLE_MAP}
+  ...
+/>
+Теперь редактор знает, как обрабатывать наши стили. Далее нужно реализовать кнопки управления inline-cтилями:
+
+toggleInlineStyle — функция включения/выключения inline-cтиля;
+
+hasInlineStyle — функция, которая укажет, применен ли конкретный стиль для выделенного текста.
+
+Для реализации этой задачи мы снова можем воспользоваться RichUtils:
+
+// src/TextEditor/useEditor.ts
+const toggleInlineStyle = React.useCallback((inlineStyle: InlineStyle) => {
+  setState((currentState) => RichUtils.toggleInlineStyle(currentState, inlineStyle))
+}, []);
+
+const hasInlineStyle = React.useCallback((inlineStyle: InlineStyle) => {
+  /* Получаем иммутабельный Set с ключами стилей */
+  const currentStyle = state.getCurrentInlineStyle();
+  /* Проверяем содержится ли там переданный стиль */
+  return currentStyle.has(inlineStyle);
+}, [state]);
+Теперь мы легко можем добавить кнопки управления inline-cтилями:
+
+// src/ToolPanel/ToolPanel.tsx
+const INLINE_STYLES_CODES = Object.values(InlineStyle);
+
+const ToolPanel: React.FC = () => {
+  const { toggleInlineStyle, hasInlineStyle } = useEditorApi();
+
+  return (
+    <div className="tool-panel">
+      ...
+      {INLINE_STYLES_CODES.map((code) => {
+        const onMouseDown = (e) => {
+          e.preventDefault();
+          toggleInlineStyle(code);
+        };
+
+        return (
+          <button
+            key={code}
+            className={cn(
+              "tool-panel__item",
+              hasInlineStyle(code) && "tool-panel__item_active"
+            )}
+            onMouseDown={onMouseDown}
+          >
+            {code}
+          </button>
+        );
+      })}
+    </div>
+  );
+};
+
+7. Создание интерактивных элементов
+Рассмотрим процесс создания интерактивных элементов на примере вставки ссылок. Для этого мы воспользуемся Entities. Entity — объект, который хранит мета-данные для определенного фрагмента текста. У него есть три свойства:
+
+type — название типа Entity
+
+mutability — тип привязки к тексту (подробнее об этом будет ниже)
+
+data — мета-данные.
+
+Создадим в конфиге перечисление типов Entity:
+
+// src/TextEditor/config.ts
+export enum EntityType {
+  link = 'link',
+}
+Далее создадим React-компонент Link, именно он будет отображаться на месте ссылок:
+
+// src/TextEditor/Link/Link.tsx
+import { ContentState } from 'draft-js';
+import * as React from 'react';
+
+type LinkProps = {
+  children: React.ReactNode;
+  contentState: ContentState;
+  entityKey: string;
+}
+
+const Link: React.FC<LinkProps> = ({ contentState, entityKey, children }) => {
+  /* Получаем url с помощью уникального ключа Entity */
+  const { url } = contentState.getEntity(entityKey).getData();
+
+  return (
+    <a href={url}>
+      {children}
+    </a>
+  );
+}
+
+export default Link;
+Стоит отметить, что при создании каждой Entity присваивается уникальный хеш-ключ. С помощью него мы можем получить доступ к сохраненным мета-данным, в данном случае к — url. Его мы будем задавать при создании Entity-ссылки.
+
+Для того чтобы Draft.js понимал, к какому фрагменту текста привязана Entity, существует система Decorators.
+
+Декоратор состоит из трех частей:
+
+strategy — функция поиска фрагмента текста на месте которого нужно отобразить компонент
+
+component — компонент, который нужно отобразить
+
+props — пропсы которые нужно передать компоненту.
+
+Создадим декоратор для привязки ссылок:
+
+// src/TextEditor/Link/index.ts
+import Link from "./Link";
+import { EntityType } from "../config";
+import { ContentBlock, ContentState, DraftDecorator } from "draft-js";
+
+function findLinkEntities(
+  /* Блок в котором производилось последнее изменение */
+  contentBlock: ContentBlock,
+  /* Функция, которая должна быть вызвана с индексами фрагмента текста */
+  callback: (start: number, end: number) => void,
+  /* Текущая карта контента */
+  contentState: ContentState
+): void {
+  /* Для каждого символа в блоке выполняем функцию фильтрации */
+  contentBlock.findEntityRanges((character) => {
+    /* Получаем ключ Entity */
+    const entityKey = character.getEntity();
+    /* Проверяем что Entity относится к типу Entity-ссылок */
+    return (
+      entityKey !== null &&
+      contentState.getEntity(entityKey).getType() === EntityType.link
+    );
+  }, callback);
+}
+
+const decorator: DraftDecorator = {
+  strategy: findLinkEntities,
+  component: Link,
+};
+
+export default decorator;
+Теперь мы можем подключить созданный декоратор к нашему редактору:
+
+// src/TextEditor/useEditor.tsx
+import { CompositeDecorator } from 'draft-js';
+import LinkDecorator from './Link';
+
+/* Объединям декораторы в один */
+const decorator = new CompositeDecorator([LinkDecorator]);
+
+export const useEditor = (): EditorApi => {
+    const [state, setState] = React.useState(() => EditorState.createEmpty(decorator));
+    ...
+}
+Отлично! Теперь наш редактор умеет обрабатывать ссылки. Теперь научим его редактировать и добавлять их.
+
+Так как в редакторе может быть несколько типов Entity, cоздадим общую функцию для добавления Entity. Она будет доступна только внутри хука и не будет доступна в компонентах. Для добавления типа ссылки создадим отдельную функцию addLink, она будет доступна в API редактора:
+
+// src/TextEditor/useEditor.tsx
+import { EditorState, RichUtils } from 'draft-js';
+
+export const useEditor = (): EditorApi => {
+    ...
+    const addEntity = React.useCallback((entityType: EntityType, data: Record<string, string>, mutability: DraftEntityMutability) => {
+    	setState((currentState) => {
+        /* Получаем текущий контент */
+      	const contentState = currentState.getCurrentContent();
+        /* Создаем Entity с данными */
+      	const contentStateWithEntity = contentState.createEntity(entityType, mutability, data);
+        /* Получаем уникальный ключ Entity */
+      	const entityKey = contentStateWithEntity.getLastCreatedEntityKey();
+        /* Обьединяем текущее состояние с новым */
+      	const newState = EditorState.set(currentState, { currentContent: contentStateWithEntity });
+      	/* Вставляем ссылку в указанное место */
+        return RichUtils.toggleLink(newState, newState.getSelection(), entityKey);
+    })
+  }, []);
+
+  const addLink = React.useCallback((url) => {
+		addEntity(EntityType.link, { url }, 'MUTABLE')
+  }, [addEntity]);
+
+	return {
+    ...
+    addLink
+	}
+}
+Стоит отметить, что Entity имеет три режима привязки к тексту:
+
+MUTABLE — текст может быть изменен
+
+IMMUTABLE — при изменении текста Entity будет удален
+
+SEGMENTED — работает так же как IMMUTABLE, с той лишь разницей, что, если текст состоит из нескольких слов, то при удалении символа, удаляется слово, но оставшиеся слова остаются привязанными к Entity. (Пример: "Маша мы|ла раму" → [backspace] → "Маша раму")
+
+Мы выбрали MUTABLE, так как текст ссылки может быть редактируемым.
+
+Теперь мы легко можем реализовать кнопку добавления ссылки. Чтобы указать адрес ссылки, воспользуемся prompt:
+
+// src/ToolPanel/ToolPanel.tsx
+const ToolPanel: React.FC = () => {
+  const { addLink } = useEditorApi();
+
+  const handlerAddLink = () => {
+   const url = prompt('URL:');
+
+    if (url) {
+      addLink(url);
+    }
+  }
+
+	return (
+    ...
+    <button onClick={handlerAddLink}>
+      Добавить ссылку
+    </button>
+    ...
+	);
+}
+Ссылки добавляются. Давайте доработаем редактор, чтобы можно было редактировать url уже созданной ссылки.
+
+Для упрощения примера сделаем так, чтобы при клике на ссылку в редакторе снова появлялся prompt с предзаполненным url.
+
+Обработаем клик в компоненте:
+
+// src/TextEditor/Link/Link.tsx
+import { useEditorApi } from '../context';
+
+const Link: React.FC<LinkProps> = ({ contentState, entityKey, children }) => {
+  const { setEntityData } = useEditorApi();
+  const { url} = contentState.getEntity(entityKey).getData();
+
+  const handlerClick = () => {
+    const newUrl = prompt('URL:', url);
+    if (newUrl) {
+      setEntityData(entityKey, { url: newUrl });
+    }
+  }
+
+  return (
+    <a href={url} onClick={handlerClick}>
+      {children}
+    </a>
+  );
+}
+И создадим функцию, с помощью которой мы сможем перезаписывать данные Entity:
+
+// src/TextEditor/useEditor.tsx
+export const useEditor = (): EditorApi => {
+    ...
+    const setEntityData = React.useCallback((entityKey, data) => {
+    setState((currentState) => {
+      /* Получаем текущий контент */
+      const content = currentState.getCurrentContent();
+      /* Объединяем текущие данные Entity с новыми */
+      const contentStateUpdated = content.mergeEntityData(
+        entityKey,
+        data,
+      )
+      /* Обновляем состояние редактора с указанием типа изменения */
+      return EditorState.push(currentState, contentStateUpdated, 'apply-entity');
+    })
+  }, []);
+
+  export {
+    ...
+    setEntityData
+	}
+}
+Стоит отметить, что существует несколько типов изменения состояния редактора. Каждый из них нужен, чтобы Draft.js правильно определял, как изменение влияет на некоторые функции: например, повтор и отмена.
+
+Вот и все. Теперь мы можем легко добавлять и редактировать произвольные Entity в нашем редакторе.
+
+
+8. Обработка сочетаний клавиш
+Во многих текстовых редакторах можно редактировать контент с помощью сочетания клавиш. В Draft.js есть механизм для реализации такого поведения. Сочетание клавиш должно выполнять определенное действие — команду. Создадим функцию обработки этих команд.
+
+// src/TextEditor/useEditor.tsx
+export const useEditor = (): EditorApi => {
+	...
+  const handleKeyCommand = React.useCallback((command: DraftEditorCommand, editorState: EditorState) => {
+  	const newState = RichUtils.handleKeyCommand(editorState, command);
+
+    if (newState) {
+ 			setState(newState);
+  		return 'handled';
+		}
+
+		return 'not-handled';
+  }, []);
+
+  export {
+    ...
+    handleKeyCommand
+	}
+}
+Функция принимает на вход название команды и текущее состояние редактора, и должна вернуть одно из двух значений:
+
+handled — команда применена
+
+not-handled — команда не применена.
+
+Во избежание гонки обновлений состояния всегда нужно стараться работать с последней актуальной версией. Подробнее об этом можно прочитать тут.
+
+С помощью RichUtils.handleKeyCommand мы добавим обработку стандартных сочетаний клавиш. Например, ctrl + I или cmd + I для применения ранее созданного стиля ITALIC.
+
+Далее необходимо прокинуть нашу функцию в компонент редактора:
+
+// src/TextEditor/TextEditor.tsx
+<Editor
+  handleKeyCommand={editorApi.handleKeyCommand}
+  ...
+/>
+Отлично, у нас есть обработка стандартных сочетаний клавиш. Но мы пойдем дальше и добавим свою комбинацию для нашего произвольного стиля текста ACCENT. Для начала расширим тип стандартных команд, чтобы ts на нас не ругался:
+
+// src/TextEditor/config.ts
+import { DraftEditorCommand} from 'draft-js';
+
+export type KeyCommand = DraftEditorCommand | 'accent'; // произвольная команда
+Далее создадим функцию для обработки нажатия клавиш:
+
+// src/TextEditor/useEditor.tsx
+import { KeyBindingUtil, getDefaultKeyBinding } from 'draft-js';
+
+export const useEditor = (): EditorApi => {
+	...
+  const handlerKeyBinding = React.useCallback((e: React.KeyboardEvent) => {
+  	/* Проверяем нажата ли клавиша q + ctrl/cmd */
+    if (e.keyCode === 81 && KeyBindingUtil.hasCommandModifier(e)) {
+    	return 'accent';
+    }
+
+    return getDefaultKeyBinding(e);
+}, []);
+
+return {
+    ...
+    handlerKeyBinding
+	}
+}
+Обратите внимание, что мы используем функцию getDefaultKeyBinding. Именно она содержит логику по стандартным сочетаниям клавиш. Еще мы воспользовались утилитой KeyBindingUtil.hasCommandModifier для того, чтобы определять, когда пользователь зажал командную клавишу: ctrl или cmd. Таким образом, при нажатии клавиш q + ctrl или  q + cmd будет выполнена команда accent. Теперь нужно ее обработать в handleKeyCommand:
+
+// src/TextEditor/useEditor.tsx
+const handleKeyCommand = React.useCallback((command: DraftEditorCommand, editorState: EditorState) => {
+   if (command === 'accent') {
+    toggleInlineStyle(InlineStyle.ACCENT);
+    return 'handled';
+  }
+  ...
+}, []);
+Так мы можем добавлять произвольные сочетания клавиш.
+
+9. Экспорт/ Импорт HTML в редактор
+Неотъемлемой частью текстового редактора является возможность экспорта и импорта данных. В Draft.js есть функция convertToRaw, которая позволяет выгрузить json с данными о всем контенте.
+
+
+На основе этих данных можно сформировать HTML. Побродив по просторам сети и npm, я нашел несколько пакетов, которые позволяли подробно указать, как конвертировать контент в HTML и из HTML. Взвесив все за и против, я остановился на пакете draft-convert (который мы установили при сетапе проекта), так как он позволял удобно реализовать желаемые возможности.
+
+Создадим файл convert.tsx — в нем мы объявим функции для конвертирования состояния редактора в HTML и обратно.
+
+Создадим функцию конвертирования состояния редактора в HTML. В ней мы опишем правила, по которым хотим конвертировать данные редактора в разметку:
+
+// src/TextEditor/convert.tsx
+import { CUSTOM_STYLE_MAP, BlockType, EntityType, InlineStyle } from './config';
+
+export const stateToHTML = convertToHTML<InlineStyle, BlockType>({
+  styleToHTML: (style) => {
+    switch (style) {
+      case InlineStyle.BOLD:
+        return <strong />;
+      ...
+      case InlineStyle.ACCENT:
+        return <span className="accent" style={CUSTOM_STYLE_MAP[InlineStyle.ACCENT]} />;
+      default:
+        return null;
+    }
+  },
+  blockToHTML: (block) => {
+    switch (block.type) {
+      case BlockType.h1:
+          return <h1 />;
+        ...
+      case BlockType.default:
+        return <p />;
+      default:
+        return null;
+    }
+  },
+  entityToHTML: (entity, originalText) => {
+    if (entity.type === EntityType.link) {
+      return (
+        <a href={entity.data.url}>
+          {originalText}
+        </a>
+      );
+    }
+    return originalText;
+  },
+});
+Чтобы воспользоваться нашим конвертером, создадим функцию toHtml:
+
+// src/TextEditor/useEditor.tsx
+export const useEditor = (): EditorApi => {
+	...
+  const toHtml = React.useCallback(() => {
+  	return stateToHTML(state.getCurrentContent());
+  }, [state]);
+
+  return {
+    ...
+    toHtml
+	}
+}
+И для примера добавим кнопку, которая будет выводить сгенерированный HTML в консоль:
+
+<button onClick={toHtml}>Print</button>
+Отлично, теперь мы можем экспортировать HTML из нашего редактора. Теперь добавим возможность импорта первоначального контента. Опишем правила конвертации HTML в данные редактора:
+
+// src/TextEditor/convert.tsx
+export const HTMLtoState = convertFromHTML<DOMStringMap, BlockType>({
+  htmlToStyle: (nodeName, node, currentStyle) => {
+    if (nodeName === 'strong') {
+        return currentStyle.add(InlineStyle.BOLD);
+    }
+    ...
+    if (nodeName === 'span' && node.classList.contains('accent')) {
+      return currentStyle.add(InlineStyle.ACCENT);
+    }
+
+    return currentStyle;
+  },
+  htmlToBlock(nodeName, node) {
+    switch (nodeName) {
+      case 'h1':
+        return BlockType.h1;
+      ...
+      case 'div':
+      case 'p':
+        return BlockType.default;
+      default:
+        return null;
+    }
+  },
+  htmlToEntity: (nodeName, node, createEntity) => {
+    if (nodeName === 'a' && node.href) {
+      return createEntity(EntityType.link, 'MUTABLE', { url: node.href });
+    }
+
+    return undefined;
+
+  },
+});
+Теперь подключим конвертер в HTML к редактору. Для этого воспользуемся стандартным методом EditorState.createWithContent и доработаем EditorApi:
+
+// src/TextEditor/useEditor.tsx
+...
+export const useEditor = (html?: string): EditorApi => {
+  const [state, setState] = React.useState(() =>
+    html
+      ? EditorState.createWithContent(HTMLtoState(html), decorator)
+      : EditorState.createEmpty(decorator)
+  );
+  ...
+}
+Теперь нам остается только передать HTML и ура! Наш редактор умеет загружаться с предустановленным контентом.
+
+10. Вместо заключения
+Прогресс не стоит на месте, с каждым днем появляются все более новые и навороченные api и библиотеки. В статье я постарался показать, как в свое время я решал данную задачку. Правда, в моем случае на проекте был подключен Mobx, и все возможности хука useEditor были реализованы в виде класса. Но, так как задача довольно обширная, я решил не перегружать статью и использовать стандартные и всеми известные хуки React.js.
+
+Полный код из статьи можно найти по этой ссылке.
+
+Если вы тоже решали подобные задачи, поделитесь в комментариях — какими инструментами вы пользовались?
+
+Спасибо за внимание!
